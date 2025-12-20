@@ -160,6 +160,9 @@ def auth_start():
 
     # Build OAuth flow from env vars (GOOGLE_CLIENT_ID/SECRET, OAUTH_REDIRECT_URI)
     flow = build_google_flow(scopes)
+    # Debug: log the redirect_uri used in the OAuth request
+    print("OAUTH redirect_uri:", flow.redirect_uri)
+
 
     # Generate the Google consent URL
     auth_url, state = flow.authorization_url(
