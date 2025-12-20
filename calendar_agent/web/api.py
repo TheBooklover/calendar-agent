@@ -16,13 +16,14 @@ import os
 from datetime import datetime
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import RedirectResponse, PlainTextResponse
 # Enables browser clients (like Replit) to call your API across origins
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from zoneinfo import ZoneInfo
 
-from calendar_agent.google_auth import get_calendar_service
+from calendar_agent.google_auth import get_calendar_service, build_google_flow, save_credentials_to_token
 from calendar_agent.gcal_tools import list_calendars, freebusy_query, create_event_primary
 from calendar_agent import planner
 
@@ -62,9 +63,16 @@ def _read_planning_calendar_ids() -> set[str]:
 def _get_service():
     """
     Create an authenticated Google Calendar service client.
-    Uses your existing OAuth token.json flow.
+
+    If the server has not been authorized yet, this raises an error telling you
+    to visit /auth/start.
     """
-    return get_calendar_service(["https://www.googleapis.com/auth/calendar"])
+    try:
+        return get_calendar_service(["https://www.googleapis.com/auth/calendar"])
+    except RuntimeError as e:
+        # Convert to a clean 401 so the frontend can handle it
+        raise HTTPException(status_code=401, detail=str(e))
+
 
 
 def _build_event_payload(label: str, start_rfc3339: str, end_rfc3339: str, tz_name: str) -> dict[str, Any]:
@@ -136,6 +144,62 @@ class CreateSelectedRequest(BaseModel):
 # ----------------------------
 # Endpoints
 # ----------------------------
+# ----------------------------
+# OAuth endpoints (Web Flow)
+# ----------------------------
+
+@app.get("/auth/start")
+def auth_start():
+    """
+    Starts Google OAuth by redirecting the user to Google's consent screen.
+
+    After the user consents, Google redirects back to OAUTH_REDIRECT_URI,
+    which should be https://calendar.mwchadwick.com/auth/callback.
+    """
+    scopes = ["https://www.googleapis.com/auth/calendar"]
+
+    # Build OAuth flow from env vars (GOOGLE_CLIENT_ID/SECRET, OAUTH_REDIRECT_URI)
+    flow = build_google_flow(scopes)
+
+    # Generate the Google consent URL
+    auth_url, state = flow.authorization_url(
+        access_type="offline",      # Requests refresh token
+        prompt="consent",           # Helps ensure refresh token is issued
+        include_granted_scopes="true",
+    )
+
+    # For a single-user demo, we do NOT persist state.
+    # In a multi-user app, you MUST store and verify state to prevent CSRF.
+    return RedirectResponse(url=auth_url)
+
+
+@app.get("/auth/callback")
+def auth_callback(request: Request):
+    """
+    Handles Google's redirect back to us with a 'code' query param.
+    Exchanges the code for tokens and saves token.json.
+    """
+    scopes = ["https://www.googleapis.com/auth/calendar"]
+
+    # Read "code" from query params
+    code = request.query_params.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing ?code= in callback URL")
+
+    # Rebuild the flow with the same redirect_uri and scopes
+    flow = build_google_flow(scopes)
+
+    # Exchange the authorization code for tokens
+    flow.fetch_token(code=code)
+
+    # Save credentials to token.json so future API calls work without reauth
+    creds = flow.credentials
+    save_credentials_to_token(creds)
+
+    return PlainTextResponse("✅ OAuth complete. You can close this tab and return to the app.")
+
+
+
 
 @app.get("/health")
 def health():
