@@ -17,3 +17,11 @@ __pycache__/
 # =========================
 .DS_Store
 .vscode/
+
+# Secrets
+credentials.json
+token.json
+.env
+
+# Virtualenv
+.venv/
