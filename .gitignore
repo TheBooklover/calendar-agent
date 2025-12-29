@@ -25,3 +25,4 @@ token.json
 
 # Virtualenv
 .venv/
+.env.save
