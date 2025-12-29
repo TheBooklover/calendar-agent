@@ -6,14 +6,19 @@ This module is deterministic and testable:
 - merge_busy_from_freebusy: merges busy intervals from multiple calendars
 - normalize_intervals_tz: converts intervals into a single timezone (for sane printing/math)
 - invert_busy_to_free: computes free intervals in a given work window
-- propose_blocks: schedules goal blocks into free time (greedy baseline)
+- propose_blocks: schedules goal blocks into free time (V0.5 slot-aware greedy baseline)
+
+V0.5 changes (Option A1):
+- Slot-aware packing: tries to place multiple goal blocks inside the same free slot.
+- Buffer is applied *between* blocks inside a slot (not after the last block in the slot).
+- Minimum block sizes are enforced per label, with an override hook for A1 demo.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,13 @@ class Interval:
     """
     start: datetime
     end: datetime
+
+    def minutes(self) -> int:
+        """
+        Return the length of the interval in whole minutes.
+        """
+        # Floor to whole minutes to keep behavior deterministic and predictable
+        return int((self.end - self.start).total_seconds() // 60)
 
 
 def parse_rfc3339(dt_str: str) -> datetime:
@@ -173,63 +185,153 @@ def invert_busy_to_free(work_start: datetime, work_end: datetime, busy: List[Int
     return [f for f in free if f.end > f.start]
 
 
-def propose_blocks(free: List[Interval], goals: List[Tuple[str, int]]) -> List[Dict[str, Any]]:
+DEFAULT_BUFFER_MINUTES = 10
+
+# Default minimum block sizes (minutes)
+# NOTE: A1 demo wants Deep Work min=30; we implement that via override passed into propose_blocks.
+DEFAULT_MIN_BLOCK_MINUTES: Dict[str, int] = {
+    "Deep Work": 60,
+    "Admin": 30,
+    "Break/Lunch": 15,
+}
+
+
+def _min_block_minutes_for_label(label: str, overrides: Optional[Dict[str, int]] = None) -> int:
+    """
+    Return the minimum block length for a given label.
+
+    - If overrides provided, they take precedence (used for A1 demo).
+    - Otherwise use DEFAULT_MIN_BLOCK_MINUTES.
+    - Unknown labels default to 15 minutes to avoid tiny fragments.
+    """
+    if overrides and label in overrides:
+        return int(overrides[label])
+    return int(DEFAULT_MIN_BLOCK_MINUTES.get(label, 15))
+
+
+def propose_blocks(
+    free: List[Interval],
+    goals: List[Tuple[str, int]],
+    buffer_minutes: int = DEFAULT_BUFFER_MINUTES,
+    min_block_minutes_by_label: Optional[Dict[str, int]] = None,
+) -> List[Dict[str, Any]]:
     """
     Allocate goal blocks into free slots.
 
-    Baseline behavior (greedy):
-    - Sort free slots by length (largest first)
-    - Fill each goal into the largest available slots
-    - If a goal doesn't fit in one slot, it will be split across multiple slots
+    V0.5 behavior (slot-aware greedy, deterministic):
+    - Process free slots in chronological order.
+    - For each slot, try to schedule multiple goal blocks inside the same slot.
+    - Goals are attempted in the order provided (treat input order as priority).
+    - Enforce per-label minimum block sizes.
+    - Insert buffer *between* blocks inside a slot.
+    - NEW (critical for A1 demo): allow PARTIAL allocation of a goal inside a slot
+      to reserve room for a later goal in the same slot.
 
-    Args:
-        free: list of free intervals
-        goals: list of (label, minutes)
-
-    Returns:
-        List of proposed blocks:
-            {
-              "label": str,
-              "start": RFC3339,
-              "end": RFC3339,
-              "minutes": int
-            }
+    Example (A1 demo):
+      Slot: 80 min, Goals: Deep Work 60, Admin 30, Buffer 10
+      => Deep Work 40 + Buffer 10 + Admin 30 (fits exactly), leaving Deep Work 20 unscheduled.
     """
-    free_sorted = sorted(free, key=lambda x: (x.end - x.start), reverse=True)
+    free_sorted = sorted(free, key=lambda x: x.start)
+    remaining: Dict[str, int] = {label: int(minutes) for (label, minutes) in goals}
 
     proposals: List[Dict[str, Any]] = []
+    buffer_delta = timedelta(minutes=int(buffer_minutes))
 
-    for label, minutes in goals:
-        remaining = int(minutes)
-        i = 0
+    def _next_goal_reserve(current_label: str) -> int:
+        """
+        Compute how many minutes we should reserve in the current slot for a DIFFERENT goal.
 
-        while remaining > 0 and i < len(free_sorted):
-            slot = free_sorted[i]
-            slot_minutes = int((slot.end - slot.start).total_seconds() // 60)
-
-            if slot_minutes <= 0:
-                i += 1
+        We keep this rule simple and deterministic:
+        - Look for the next goal in input order (after current_label) that still has remaining minutes.
+        - Reserve (min_block + buffer) for it, so we can actually schedule it next.
+        - If none exists, reserve 0.
+        """
+        seen_current = False
+        for (label, _) in goals:
+            if label == current_label:
+                seen_current = True
+                continue
+            if not seen_current:
+                continue
+            if remaining.get(label, 0) <= 0:
                 continue
 
-            use = min(remaining, slot_minutes)
-            block_start = slot.start
-            block_end = slot.start + timedelta(minutes=use)
+            next_min = _min_block_minutes_for_label(label, overrides=min_block_minutes_by_label)
+            # Reserve buffer + minimum block so the next goal can be placed.
+            return int(buffer_minutes) + int(next_min)
 
-            proposals.append(
-                {
-                    "label": label,
-                    "start": to_rfc3339(block_start),
-                    "end": to_rfc3339(block_end),
-                    "minutes": use,
-                }
-            )
+        return 0
 
-            # Shrink the current slot by the amount we used
-            free_sorted[i] = Interval(start=block_end, end=slot.end)
-            remaining -= use
+    for slot in free_sorted:
+        cursor = slot.start
+        remaining_in_slot = slot.minutes()
+        if remaining_in_slot <= 0:
+            continue
 
-            # If the slot is exhausted, move on
-            if int((free_sorted[i].end - free_sorted[i].start).total_seconds() // 60) <= 0:
-                i += 1
+        while True:
+            placed_anything = False
 
+            for (label, _) in goals:
+                if remaining.get(label, 0) <= 0:
+                    continue
+
+                min_block = _min_block_minutes_for_label(label, overrides=min_block_minutes_by_label)
+
+                # If we can't fit even the minimum for this label, skip it.
+                if remaining_in_slot < min_block:
+                    continue
+
+                # --- NEW: reserve room for the next goal (if any) ---
+                reserve = _next_goal_reserve(label)
+
+                # Max we can allocate *while leaving reserve room*
+                # If reserve is too large, this could become <= 0.
+                alloc_cap = max(0, remaining_in_slot - reserve)
+
+                # Choose an allocation size:
+                # - Prefer allocating up to alloc_cap (so we leave room for the next goal).
+                # - But allocation must still be >= min_block.
+                # - If alloc_cap is too small to meet min_block, fall back to filling as much as we can.
+                if alloc_cap >= min_block:
+                    alloc = min(remaining[label], alloc_cap)
+                else:
+                    # Can't reserve and still meet minimum -> just allocate what we can in this slot.
+                    alloc = min(remaining[label], remaining_in_slot)
+
+                # Enforce minimum block size.
+                if alloc < min_block:
+                    continue
+
+                block_start = cursor
+                block_end = cursor + timedelta(minutes=alloc)
+
+                proposals.append(
+                    {
+                        "label": label,
+                        "start": to_rfc3339(block_start),
+                        "end": to_rfc3339(block_end),
+                        "minutes": alloc,
+                    }
+                )
+
+                remaining[label] -= alloc
+                cursor = block_end
+                remaining_in_slot -= alloc
+
+                # Apply buffer ONLY if there is room for it.
+                # (Buffer is between blocks; if it doesn't fit, slot ends.)
+                if remaining_in_slot > 0:
+                    if remaining_in_slot >= int(buffer_minutes):
+                        cursor = cursor + buffer_delta
+                        remaining_in_slot -= int(buffer_minutes)
+                    else:
+                        remaining_in_slot = 0
+
+                placed_anything = True
+                break  # restart goal loop (priority order)
+
+            if not placed_anything or remaining_in_slot <= 0:
+                break
+
+    proposals.sort(key=lambda b: b["start"])
     return proposals
