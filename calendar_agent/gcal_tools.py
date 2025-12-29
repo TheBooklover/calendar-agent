@@ -37,6 +37,50 @@ def list_calendars(service) -> List[Dict[str, Any]]:
 
     return out
 
+def list_events_primary(
+    service,
+    time_min: str,
+    time_max: str,
+) -> List[Dict[str, Any]]:
+    """
+    List events on the PRIMARY calendar within a time window.
+
+    Why this exists:
+    - We need to detect events previously created by this app (idempotency)
+    - We only read primary here to match our "safe hands" rule for writes/management
+
+    Args:
+        time_min/time_max: RFC3339 timestamps (inclusive-ish start, exclusive-ish end)
+
+    Returns:
+        A list of raw Google Calendar event objects.
+    """
+    events: List[Dict[str, Any]] = []
+    page_token: str | None = None
+
+    # Google Calendar API paginates results; we loop until done.
+    while True:
+        resp = (
+            service.events()
+            .list(
+                calendarId="primary",
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,       # Expand recurring events into individual instances
+                orderBy="startTime",     # Makes results deterministic and easier to debug
+                pageToken=page_token,
+            )
+            .execute()
+        )
+
+        events.extend(resp.get("items", []))
+        page_token = resp.get("nextPageToken")
+
+        if not page_token:
+            break
+
+    return events
+
 
 def freebusy_query(
     service,

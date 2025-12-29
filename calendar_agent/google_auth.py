@@ -20,6 +20,13 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+# Token persistence on Render Free: store token JSON in Redis (Upstash)
+from calendar_agent.token_store import save_token
+import json  # Needed to parse token JSON loaded from Redis
+
+# Token persistence on Render Free: load token JSON from Redis (Upstash)
+from calendar_agent.token_store import load_token
+
 
 
 def build_google_flow(scopes: List[str]) -> Flow:
@@ -51,32 +58,49 @@ def build_google_flow(scopes: List[str]) -> Flow:
 
 def save_credentials_to_token(creds: Credentials, token_path: str = "token.json") -> None:
     """
-    Save OAuth credentials to token.json so future requests can use them.
+    Persist OAuth credentials externally (Redis/Upstash) so future requests can use them.
+
+    NOTE:
+    - token_path is kept only for backward compatibility with existing callers.
+    - We do NOT write to disk because Render free instances have ephemeral filesystems.
     """
-    with open(token_path, "w", encoding="utf-8") as f:
-        f.write(creds.to_json())
+    # creds.to_json() returns a JSON string representing the credentials.
+    save_token(creds.to_json())
+
 
 
 def get_calendar_service(scopes: List[str], token_path: str = "token.json"):
     """
-    Load token.json and return a Google Calendar API client.
+    Return a Google Calendar API client.
 
-    If token.json is missing or invalid, you must run the OAuth flow
-    via /auth/start and /auth/callback to generate a fresh token.
+    On Render free, we cannot rely on token.json existing on disk.
+    Instead, we load the stored token JSON from Redis (Upstash).
+
+    NOTE:
+    - token_path is kept for backward compatibility, but ignored for persistence.
     """
     creds: Optional[Credentials] = None
 
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, scopes)
+    # Load token JSON from Redis (Upstash) instead of checking the filesystem.
+    token_json = load_token()
+    if token_json:
+        # Convert the stored JSON string into a dict for the Google library.
+        token_info = json.loads(token_json)
+
+        # Rehydrate credentials from stored token info.
+        # This is the in-memory equivalent of from_authorized_user_file(...).
+        creds = Credentials.from_authorized_user_info(token_info, scopes)
 
     if not creds:
-        raise RuntimeError("token.json not found. Run /auth/start to authenticate first.")
+        raise RuntimeError("No stored OAuth token. Run /auth/start to authenticate first.")
 
-    if creds and not creds.valid:
+    # If creds are expired, refresh them and persist the refreshed version back to Redis.
+    if not creds.valid:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
             save_credentials_to_token(creds, token_path=token_path)
         else:
-            raise RuntimeError("token.json invalid and cannot refresh. Run /auth/start again.")
+            raise RuntimeError("Stored OAuth token is invalid and cannot refresh. Run /auth/start again.")
 
     return build("calendar", "v3", credentials=creds)
+

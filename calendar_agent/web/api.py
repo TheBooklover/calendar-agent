@@ -13,6 +13,10 @@ Why this exists:
 """
 
 import os
+# Load local environment variables from .env for local development
+# (In Render, env vars are provided by the platform instead)
+from dotenv import load_dotenv
+load_dotenv()
 from datetime import datetime
 from typing import Any
 
@@ -180,26 +184,38 @@ def auth_start():
 def auth_callback(request: Request):
     """
     Handles Google's redirect back to us with a 'code' query param.
-    Exchanges the code for tokens and saves token.json.
+    Exchanges the code for tokens and saves token.json (locally) or Upstash (in prod).
     """
+    print("🔥 auth_callback hit", flush=True)
+
     scopes = ["https://www.googleapis.com/auth/calendar"]
 
     # Read "code" from query params
     code = request.query_params.get("code")
     if not code:
+        # Helpful error if someone hits /auth/callback directly without completing consent
         raise HTTPException(status_code=400, detail="Missing ?code= in callback URL")
 
-    # Rebuild the flow with the same redirect_uri and scopes
+    # Rebuild the OAuth flow with the same redirect_uri and scopes
     flow = build_google_flow(scopes)
 
     # Exchange the authorization code for tokens
     flow.fetch_token(code=code)
 
-    # Save credentials to token.json so future API calls work without reauth
+    # Persist credentials so future API calls work without reauth
     creds = flow.credentials
-    save_credentials_to_token(creds)
+
+    # IMPORTANT: use token_store abstraction
+    # - local dev (no Upstash env vars): writes token.json to disk
+    # - production (Upstash configured): writes token JSON to Redis
+    from calendar_agent.token_store import save_token
+    save_token(creds.to_json())
+
+    # Helpful debug line so you can confirm this ran in uvicorn logs
+    print("✅ Saved OAuth token via token_store", flush=True)
 
     return PlainTextResponse("✅ OAuth complete. You can close this tab and return to the app.")
+
 
 
 
@@ -226,6 +242,7 @@ def calendars():
 
 @app.post("/plan/preview")
 def plan_preview(req: PreviewRequest):
+    print("DEBUG: /plan/preview hit", flush=True)  # TEMP: confirms endpoint is executing
     """
     Read-only: compute free slots and proposed blocks.
 
@@ -285,6 +302,12 @@ def plan_preview(req: PreviewRequest):
 
     # Allocate blocks into free slots
     blocks = planner.propose_blocks(free_slots, goals)
+    # --- TEMP DEBUG (remove later) ---
+    print("\n=== DEBUG: Proposed blocks from planner ===", flush=True)
+    for b in blocks:
+        print(b, flush=True)
+# --- END TEMP DEBUG ---
+
 
     # Return UI-friendly JSON
     return {
