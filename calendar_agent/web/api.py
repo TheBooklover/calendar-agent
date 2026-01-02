@@ -36,6 +36,7 @@ app = FastAPI(title="Calendar Agent API", version="0.2.0")
 # --- CORS (development only) ---
 # Allows your Replit-hosted frontend (different domain) to call this API.
 from fastapi.middleware.cors import CORSMiddleware
+print("LOADED API FILE:", __file__, flush=True)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],          # Dev-only. In production, restrict to your UI domain.
@@ -90,6 +91,85 @@ def _build_event_payload(label: str, start_rfc3339: str, end_rfc3339: str, tz_na
         "description": "Created by Calendar Agent (primary calendar only).",
     }
 
+def _env_truthy(name: str, default: str = "0") -> bool:
+    """
+    Interpret env vars like "1", "true", "yes", "on" as True.
+
+    This is useful for demo mode toggles in hosted environments (Render, etc.).
+    """
+    raw = os.getenv(name, default).strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _coerce_min_block_map(raw: dict[str, Any] | None) -> dict[str, int] | None:
+    """
+    Validate and coerce min_block_minutes_by_label into dict[str, int] with guardrails.
+
+    Why guardrails matter:
+    - Prevents nonsense inputs (negative minutes, huge values)
+    - Keeps your API stable and safe for a public demo
+    """
+    if raw is None:
+        return None
+
+    out: dict[str, int] = {}
+
+    for label, value in raw.items():
+        if not isinstance(label, str):
+            raise HTTPException(status_code=400, detail="min_block_minutes_by_label keys must be strings")
+
+        try:
+            minutes = int(value)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail=f"min_block_minutes_by_label['{label}'] must be an integer",
+            )
+
+        # Guardrails: 5–240 minutes keeps this sane for a calendar agent demo
+        if minutes < 5 or minutes > 240:
+            raise HTTPException(
+                status_code=400,
+                detail=f"min_block_minutes_by_label['{label}'] must be between 5 and 240",
+            )
+
+        out[label] = minutes
+
+    return out
+
+
+def _resolve_planner_settings(req: "PreviewRequest") -> dict[str, Any]:
+    """
+    Resolve planner settings using a clear priority order:
+
+    1) Explicit request fields win.
+    2) If demo_mode=True (request) OR PLANNER_DEMO_MODE=1 (env),
+       apply A1 defaults ONLY when min_block_minutes_by_label is not provided.
+
+    A1 default used here:
+      - Deep Work min block = 30
+      - Admin min block = 30
+
+    Note: buffer_minutes defaults to 10 if not provided.
+    """
+    buffer_minutes = req.buffer_minutes if req.buffer_minutes is not None else 10
+    min_blocks = _coerce_min_block_map(req.min_block_minutes_by_label)
+
+    demo_from_req = bool(req.demo_mode) if req.demo_mode is not None else False
+    demo_from_env = _env_truthy("PLANNER_DEMO_MODE", "0")
+    demo_on = demo_from_req or demo_from_env
+
+    # Apply A1 defaults only if caller didn't explicitly provide min_blocks
+    if demo_on and min_blocks is None:
+        min_blocks = {"Deep Work": 30, "Admin": 30}
+
+    return {
+        "buffer_minutes": buffer_minutes,
+        "min_block_minutes_by_label": min_blocks,
+        "demo_mode_applied": demo_on,
+    }
+
+
 
 # ----------------------------
 # Request models (API contracts)
@@ -107,6 +187,27 @@ class PreviewRequest(BaseModel):
     deep_work_minutes: int = Field(120, ge=0, le=600, description="Target minutes for Deep Work")
     admin_minutes: int = Field(30, ge=0, le=600, description="Target minutes for Admin")
     break_minutes: int = Field(30, ge=0, le=600, description="Target minutes for Break/Lunch")
+    # -----------------------
+    # V0.5 planner controls
+    # -----------------------
+
+    buffer_minutes: int | None = Field(
+        None,
+        ge=0,
+        le=60,
+        description="Minutes of buffer inserted BETWEEN scheduled blocks (V0.5 control)",
+    )
+
+    min_block_minutes_by_label: dict[str, int] | None = Field(
+        None,
+        description="Optional per-label minimum block sizes, e.g. {'Deep Work': 30, 'Admin': 30}",
+    )
+
+    demo_mode: bool | None = Field(
+        None,
+        description="If true, applies A1 demo defaults when overrides are not provided",
+    )
+
 
 
 class CreateRequest(BaseModel):
@@ -228,6 +329,67 @@ def health():
     """
     return {"ok": True}
 
+@app.get("/demo/v05")
+def demo_v05():
+    """
+    Deterministic, OAuth-free demo of the V0.5 planner.
+
+    Why:
+    - You can hit ONE endpoint and see the planner work instantly.
+    - Does not depend on Google Calendar availability.
+    - Mirrors the A1 acceptance scenario (packing with buffer between blocks).
+    """
+    tz = ZoneInfo("America/Toronto")
+
+    # A1 demo slot: 80 minutes total
+    free_slots = [
+        planner.Interval(
+            start=datetime(2025, 12, 29, 9, 0, tzinfo=tz),
+            end=datetime(2025, 12, 29, 10, 40, tzinfo=tz),
+        )
+    ]
+
+    goals = [
+        ("Deep Work", 60),
+        ("Admin", 30),
+    ]
+
+    # Force A1-style settings for a compelling default demo
+    settings = {
+        "buffer_minutes": 10,
+        "min_block_minutes_by_label": {"Deep Work": 30, "Admin": 30},
+        "demo_mode_applied": True,
+    }
+
+    blocks = planner.propose_blocks(
+        free=free_slots,
+        goals=goals,
+        buffer_minutes=settings["buffer_minutes"],
+        min_block_minutes_by_label=settings["min_block_minutes_by_label"],
+    )
+
+    return {
+        "demo": "v0.5_offline",
+        "tz": "America/Toronto",
+        "window": {"start": free_slots[0].start.isoformat(), "end": free_slots[0].end.isoformat()},
+        "planner_settings": settings,
+        "free_slots": [
+            {
+                "start": s.start.isoformat(),
+                "end": s.end.isoformat(),
+                "minutes": int((s.end - s.start).total_seconds() // 60),
+            }
+            for s in free_slots
+        ],
+        "proposed_blocks": blocks,
+        "notes": [
+            "This endpoint does not call Google Calendar.",
+            "It exists to demonstrate deterministic V0.5 scheduling behavior reliably.",
+            "It matches the A1 acceptance scenario: buffer is applied between blocks, enabling packing.",
+        ],
+    }
+
+
 
 @app.get("/calendars")
 def calendars():
@@ -290,6 +452,11 @@ def plan_preview(req: PreviewRequest):
     merged_busy = planner.merge_busy_from_freebusy(calendars_busy)
     merged_busy = planner.normalize_intervals_tz(merged_busy, tz)
 
+    print(f"DEBUG: Busy intervals: {len(merged_busy)}", flush=True)
+    for b in merged_busy:
+        print({"start": b.start.isoformat(), "end": b.end.isoformat()}, flush=True)
+
+
     # Compute free slots inside the window
     free_slots = planner.invert_busy_to_free(window_start, window_end, merged_busy)
 
@@ -301,7 +468,17 @@ def plan_preview(req: PreviewRequest):
     ]
 
     # Allocate blocks into free slots
-    blocks = planner.propose_blocks(free_slots, goals)
+    # Resolve V0.5 planner controls (buffer, min block sizes, demo defaults)
+    settings = _resolve_planner_settings(req)
+
+    # Allocate blocks into free slots using V0.5 planner controls
+    blocks = planner.propose_blocks(
+        free=free_slots,
+        goals=goals,
+        buffer_minutes=settings["buffer_minutes"],
+        min_block_minutes_by_label=settings["min_block_minutes_by_label"],
+    )
+
     # --- TEMP DEBUG (remove later) ---
     print("\n=== DEBUG: Proposed blocks from planner ===", flush=True)
     for b in blocks:
@@ -314,6 +491,7 @@ def plan_preview(req: PreviewRequest):
         "date": req.date,
         "tz": req.tz,
         "window": {"start": window_start.isoformat(), "end": window_end.isoformat()},
+        "planner_settings": settings,  # <-- V0.5: show applied controls
         "free_slots": [
             {
                 "start": s.start.isoformat(),
@@ -324,6 +502,23 @@ def plan_preview(req: PreviewRequest):
         ],
         "proposed_blocks": blocks,
     }
+
+@app.post("/plan/preview_demo")
+def plan_preview_demo(req: PreviewRequest):
+    """
+    Same as /plan/preview, but forces demo_mode=True.
+
+    Purpose:
+    - UI can call this endpoint to always use A1-friendly defaults
+      without needing to pass planner knobs explicitly.
+    """
+    # Force demo behavior (A1 defaults) without requiring UI changes
+    req.demo_mode = True
+
+    # Reuse the normal preview logic
+    return plan_preview(req)
+
+
 
 
 @app.post("/plan/create")
