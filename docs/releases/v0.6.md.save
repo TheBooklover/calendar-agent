@@ -1,0 +1,20 @@
+# v0.6 — Frontend Demo UI + Guided README
+
+## What shipped
+- Added a simple frontend HTML UI that can:
+  - Preview planning via API
+  - Run an offline deterministic demo via `/demo/v05`
+- Updated README so reviewers can quickly understand:
+  - The deterministic baseline (V0.5) vs the UI demo (V0.6)
+  - How to run the demo end-to-end
+
+## Why it matters
+This version makes the project easy to evaluate in under 2 minutes:
+- The offline demo proves deterministic scheduling behavior without OAuth dependency.
+- The preview flow demonstrates the real API contract used by the UI.
+
+## How to demo quickly
+1. Open the frontend HTML
+2. Click **Offline Demo (V0.5)** to verify deterministic scheduling output
+3. Click **Preview Plan** to exercise the live API preview flow
+
