@@ -257,3 +257,78 @@ This mirrors how real AI products are built in production.
 
 ## License
 TBD
+
+**Architecture note:**  
+The planning engine is intentionally decoupled from the UI and calendar provider, allowing the same logic to be reused by deterministic and AI-driven planners.
+
+
+## Demo endpoints (V0.5+)
+
+### Deterministic demo (no OAuth required)
+- `GET /demo/v05`
+  - Returns a deterministic schedule using a fixed free slot (A1 scenario).
+  - Purpose: recruiter-proof demo of the planner logic.
+
+### Real calendar preview (OAuth required)
+- `POST /plan/preview`
+  - Uses Google Calendar FreeBusy to compute real free slots, then proposes blocks.
+- `POST /plan/preview_demo`
+  - Same as `/plan/preview`, but forces demo defaults (A1) without needing UI knobs.
+
+## 🔍 How to Demo This Project (Recommended)
+
+This project is designed to be demoed in two distinct modes, each serving a different purpose.
+
+### 1️⃣ Offline Demo (Deterministic, No OAuth)
+**Best for first-time reviewers**
+
+- Uses a fixed, deterministic scheduling scenario
+- Does NOT require Google OAuth
+- Does NOT write to any calendar
+- Demonstrates the core planning logic clearly and safely
+
+**How to run:**
+- Open the hosted UI
+- Click **“Offline Demo (V0.5)”**
+- Review the generated blocks and free slots
+
+This mode exists to provide a reliable, explainable baseline for evaluating scheduling quality before introducing AI-driven behavior.
+
+---
+
+### 2️⃣ Live Preview (Calendar-Aware, Guarded Writes)
+**For deeper exploration**
+
+- Uses real calendar availability
+- Requires Google OAuth
+- Event creation is protected by an explicit `CONFIRM` step
+- Allows selective block creation
+
+**How to run:**
+- Click **“Preview Plan”**
+- Authenticate with Google Calendar
+- Review proposed blocks
+- Type `CONFIRM` to enable calendar writes
+
+This mode demonstrates how the deterministic planner integrates with real-world constraints safely.
+
+---
+
+### Why two modes?
+Separating the demo this way ensures:
+- Reliable, zero-risk demos for reviewers
+- Clear separation between planning logic and external dependencies
+- A strong foundation for introducing AI-driven planning in future versions
+
+## 📌 Versioning Context
+
+- **V0.5.x** focuses on deterministic, explainable scheduling
+- It intentionally contains **no AI**
+- This version defines what “good scheduling” looks like before probabilistic models are introduced
+
+Upcoming versions will build on this baseline to introduce:
+- heuristic tuning
+- AI-assisted prioritization
+- adaptive scheduling behavior
+
+The deterministic planner serves as a control group for future AI experimentation.
