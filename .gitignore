@@ -29,3 +29,11 @@ token.json
 calendar_agent/smoke_planner_buffer.py
 .env.save
 calendar_agent/smoke_planner_buffer.py
+
+# --- Python packaging / editable install artifacts ---
+*.egg-info/
+dist/
+build/
+
+# --- Editor backup files ---
+*.save
