@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple
 
 from calendar_agent.calendar_writer import SimulatedCalendarWriter
+from calendar_agent.planner import Interval
 from calendar_agent.planning.orchestrator import plan_with_optional_ai
 
 
@@ -99,7 +101,10 @@ def main(argv: List[str] | None = None) -> int:
 
     # NOTE: For V1.0 we intentionally keep "free" empty in CLI to avoid coupling
     # to calendar free/busy parsing. Demo scripts can pass real intervals.
-    free: List[Dict[str, Any]] = []
+    now = datetime.now()
+    start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    end = start + timedelta(hours=4)
+    free = [Interval(start=start, end=end)]
     goals = _parse_goals(args.goals)
 
     # For V1.0 portfolio demo:

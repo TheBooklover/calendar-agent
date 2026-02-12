@@ -146,7 +146,7 @@ def plan_with_ai_reasoner(
             baseline_blocks=baseline_blocks,
         )
 
-        validation_errors = _validate_proposal(proposal)
+        validation_errors = _validate_proposal(proposal, goal_labels=[label for (label, _mins) in goals])
         if validation_errors:
             diagnostics = _OrchestratorDiagnostics(
                 ai_attempted=True,
@@ -322,7 +322,30 @@ def _call_ai_reasoner(
     raise TypeError("ai_reasoner must be callable or expose .propose(...)")
 
 
-def _validate_proposal(proposal: Any) -> List[str]:
+def _normalize_validation_result(raw):
+    """Normalize validator outputs into List[str] errors."""
+    if raw is None:
+        return []
+    # Common: already a list of strings
+    if isinstance(raw, list):
+        # If it's a list of strings, keep non-empty strings
+        if all(isinstance(x, str) for x in raw):
+            return [x for x in raw if x.strip()]
+        # Some validators return [ok_bool, message]
+        if len(raw) == 2 and isinstance(raw[0], bool) and isinstance(raw[1], str):
+            return [] if raw[0] else ([raw[1]] if raw[1].strip() else ["Invalid AI proposal"])
+        # Unknown list shape: treat as invalid
+        return ["Invalid AI proposal (unrecognized validator output)"]
+    # Tuple: (ok, msg)
+    if isinstance(raw, tuple) and len(raw) == 2 and isinstance(raw[0], bool) and isinstance(raw[1], str):
+        return [] if raw[0] else ([raw[1]] if raw[1].strip() else ["Invalid AI proposal"])
+    # String: single error
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    return ["Invalid AI proposal (unrecognized validator output)"]
+
+
+def _validate_proposal(proposal: Any, *, goal_labels: List[str]) -> List[str]:
     """
     Validate using your existing guardrails.
 
@@ -332,8 +355,8 @@ def _validate_proposal(proposal: Any) -> List[str]:
     """
     try:
         from calendar_agent.planning.ai_validate import validate_ai_planning_proposal  # type: ignore
-        errors = validate_ai_planning_proposal(proposal)
-        return list(errors or [])
+        errors = validate_ai_planning_proposal(proposal, goal_labels=list(goal_labels))
+        return _normalize_validation_result(errors)
     except Exception:
         pass
 
