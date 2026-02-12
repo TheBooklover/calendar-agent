@@ -90,6 +90,13 @@ def main(argv: List[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    # Lazy AI wiring: only attempt AI if the user enabled it
+    ai_reasoner = None
+    if bool(getattr(args, 'enable_ai', False)):
+        from calendar_agent.planning.ai_factory import build_ai_reasoner  # local import to avoid hard dependency
+        ai_reasoner = build_ai_reasoner()
+
+
     # NOTE: For V1.0 we intentionally keep "free" empty in CLI to avoid coupling
     # to calendar free/busy parsing. Demo scripts can pass real intervals.
     free: List[Dict[str, Any]] = []
@@ -98,7 +105,7 @@ def main(argv: List[str] | None = None) -> int:
     # For V1.0 portfolio demo:
     # - AI is “available” only if you pass an ai_reasoner object.
     # - You can wire your real reasoner here later (V1.0.1) without changing CLI UX.
-    ai_reasoner = None
+
 
     result = plan_with_optional_ai(
         free=free,
