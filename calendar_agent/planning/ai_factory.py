@@ -3,10 +3,9 @@ calendar_agent/planning/ai_factory.py
 
 Build an AI reasoner (callable) if environment is configured.
 
-In this repo, the AI "reasoner" is function-based:
-- propose_ai_planning_proposal(...) returns a structured proposal
-
-The orchestrator supports callable reasoners, so we return a thin wrapper function.
+In this project:
+- propose_ai_planning_proposal(goals, model=...) returns AIPlanningProposal
+- Orchestrator accepts a callable reasoner
 """
 
 from __future__ import annotations
@@ -21,14 +20,13 @@ Goals = Sequence[Tuple[str, int]]
 def build_ai_reasoner() -> Optional[Callable[..., Any]]:
     """
     Returns:
-      - callable reasoner if OPENAI_API_KEY is set
-      - None otherwise (safe fallback)
+        A callable reasoner if OPENAI_API_KEY is set,
+        otherwise None (safe fallback).
     """
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         return None
 
-    # Lazy import so CLI/tests work even when AI deps/config are absent
     from calendar_agent.planning.ai_reasoner import propose_ai_planning_proposal
 
     def _reasoner(
@@ -40,14 +38,11 @@ def build_ai_reasoner() -> Optional[Callable[..., Any]]:
         preferences: Optional[Any] = None,
         baseline_blocks: Optional[Any] = None,
     ) -> Any:
-        # Thin wrapper to match orchestrator's callable contract
+        # Your reasoner currently only uses goals + model.
+        # Everything else is intentionally ignored for now.
         return propose_ai_planning_proposal(
-            free=list(free),
             goals=list(goals),
-            buffer_minutes=buffer_minutes,
-            min_block_minutes_by_label=min_block_minutes_by_label,
-            preferences=preferences,
-            baseline_blocks=baseline_blocks,
+            model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         )
 
     return _reasoner
