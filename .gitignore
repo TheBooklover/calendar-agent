@@ -37,3 +37,5 @@ build/
 
 # --- Editor backup files ---
 *.save
+
+.env
