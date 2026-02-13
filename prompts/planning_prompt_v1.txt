@@ -10,20 +10,22 @@ Input:
 - A list of goals with duration (minutes)
 
 Output:
-Return a structured JSON object matching the AIPlanningProposal contract.
+Return a structured JSON object matching the AIPlanningProposal contract:
 
-You may:
-- Suggest goal reordering
-- Suggest buffer adjustments
-- Suggest soft priority changes
+{
+  "priority_order": ["Goal A", "Goal B", "..."],
+  "rationale": "NON-EMPTY string (at least 1 sentence).",
+  "confidence": 0.0
+}
 
-You may NOT:
-- Invent new goals
-- Remove goals
-- Create time intervals
-- Modify goal durations
+Rules:
+- "priority_order" may be omitted or null if no reordering is needed.
+- "rationale" MUST be a non-empty string (>= 10 characters).
+- "confidence" MUST be a float between 0 and 1.
+- Do NOT invent goals. Only reference goals provided.
+- If no meaningful improvements are possible, return a valid proposal with:
+  - priority_order: null
+  - rationale: explain briefly why no change is suggested
+  - confidence: 0.5
 
-If no meaningful improvements are possible,
-return a valid but empty proposal.
-
-Always respect contract format exactly.
+Return ONLY JSON. No markdown. No extra keys.
