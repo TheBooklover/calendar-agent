@@ -1,19 +1,19 @@
 """
-AI Provider (V0.7)
+AI Provider (V0.7+)
 
-This module is responsible for obtaining an AIPlanningProposal.
-In V0.7, the AI output is:
-- parsed into AIPlanningProposal
-- validated elsewhere (validator remains source of truth)
+Responsibilities:
+- Build the LLM prompt for planning proposals
+- Parse LLM JSON into AIPlanningProposal
 
 Design rule:
-- This module may fail or return low-quality output.
-- Callers must treat it as untrusted input.
+- AI output is untrusted.
+- Validation happens elsewhere (deterministic validator is source of truth).
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import List, Tuple
 
 from calendar_agent.planning.ai_contract import AIPlanningProposal
@@ -21,19 +21,25 @@ from calendar_agent.planning.ai_contract import AIPlanningProposal
 
 def _build_prompt(goals: List[Tuple[str, int]]) -> str:
     """
-    Build a minimal prompt that asks the model to output ONLY JSON.
+    Build a prompt that asks the model to output ONLY JSON.
 
-    Note: Keep this prompt stable to support deterministic testing and regression checks.
+    V1.0+: prompt wording is externalized under /prompts for versioning.
     """
+    template_path = Path("prompts/planning_prompt_v1.txt")
+    template = template_path.read_text(encoding="utf-8").strip()
+
     goal_lines = "\n".join([f"- {label}: {minutes} minutes" for (label, minutes) in goals])
 
-    return (
-        "You are assisting with daily planning.\n"
-        "Given the goals below, suggest a priority_order (list of labels).\n"
-        "Return ONLY valid JSON with keys: priority_order, rationale, confidence.\n"
-        "confidence must be a float between 0 and 1.\n\n"
-        f"Goals:\n{goal_lines}\n"
+    # Keep prompt construction deterministic and easy to diff
+    prompt = (
+        template
+        + "\n\n"
+        + "Goals:\n"
+        + goal_lines
+        + "\n\n"
+        + "Return ONLY valid JSON matching the AIPlanningProposal schema."
     )
+    return prompt
 
 
 def parse_ai_proposal_json(text: str) -> AIPlanningProposal:
@@ -45,7 +51,7 @@ def parse_ai_proposal_json(text: str) -> AIPlanningProposal:
     """
     data = json.loads(text)
 
-    # Defensive extraction with clear defaults / errors
+    # Defensive extraction with clear defaults
     priority_order = data.get("priority_order")
     rationale = data.get("rationale", "")
     confidence = data.get("confidence", 0.0)
