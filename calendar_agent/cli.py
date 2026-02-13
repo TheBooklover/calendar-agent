@@ -97,6 +97,8 @@ def main(argv: List[str] | None = None) -> int:
     if bool(getattr(args, 'enable_ai', False)):
         from calendar_agent.planning.ai_factory import build_ai_reasoner  # local import to avoid hard dependency
         ai_reasoner = build_ai_reasoner()
+    if args.enable_ai and ai_reasoner is None:
+        print("\n[AI] Enabled, but OPENAI_API_KEY not set (or reasoner unavailable). Using deterministic fallback.")
 
 
     # NOTE: For V1.0 we intentionally keep "free" empty in CLI to avoid coupling
